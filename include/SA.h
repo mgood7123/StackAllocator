@@ -95,12 +95,14 @@ namespace SA {
         PageList list;
         public:
         
-        template <typename T>
-        T* alloc() {
+        template <typename T, typename ... Args>
+        T* alloc(Args && ... args) {
             size_t s = sizeof(T);
-            return (T*)list.add(s, [](void*ptr){
+            T * p = reinterpret_cast<T*>(list.add(s, [](void*ptr){
                 ((T*)ptr)->~T();
-            });
+            }));
+            new(p) T(args...);
+            return p;
         }
     };
     using DefaultAllocator = Allocator<DefaultPageList>;
