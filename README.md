@@ -10,6 +10,8 @@ includes `Log` i, w, e, and a for logging
 
 `SA::Allocator` is used to allocate objects
 
+`SA::DefaultAllocator` is a type alias for `SA::Allocator<SA::PageList<4096>>`
+
 `alloc<T>()` allocates an object large enough to hold that type, and returns a pointer to it as `T*`
 
 the destructor `~Allocator` deallocates all allocated memory via the `alloc<T>()` function
