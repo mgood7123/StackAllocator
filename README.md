@@ -47,3 +47,35 @@ int main () {
     return 0;
 }
 ```
+```
+hi
+allocating page: 0xb4000075f7c2c010 with size 16
+allocating page: 0xb4000075f7c2b010 with size 4
+allocating page: 0xb4000075f7c35000 with size 24
+hello
+allocating page: 0xb4000075f7c2c020 with size 16
+allocating page: 0xb4000075f7c2c030 with size 16
+deallocating page: 0xb4000075f7c2c030 with size 16
+ptr: 0x000000: 98 6e c9 c6 59 00 00 00  .n..Y...
+ptr: 0x000008: 20 c0 c2 f7 75 00 00 b4   ...u...
+
+A
+sub: 0xb4000075f7c2c020
+deallocating page: 0xb4000075f7c2c020 with size 16
+ptr: 0x000000: 98 6e c9 c6 59 00 00 00  .n..Y...
+ptr: 0x000008: 00 00 00 00 00 00 00 00  ........
+
+A
+sub: 0x0
+deallocating page: 0xb4000075f7c2c010 with size 16
+ptr: 0x000000: c0 20 c3 f7 75 00 00 b4  . ..u...
+ptr: 0x000008: 02 00 00 00 00 00 00 00  ........
+
+deallocating page: 0xb4000075f7c35000 with size 24
+ptr: 0x000000: 0a 68 65 6c 6c 6f 00 00  .hello..
+ptr: 0x000008: 00 00 00 00 00 00 00 00  ........
+ptr: 0x000010: 00 00 00 00 00 00 00 00  ........
+
+deallocating page: 0xb4000075f7c2b010 with size 4
+ptr: 0x000000: 4c aa 08 00              L...
+```
