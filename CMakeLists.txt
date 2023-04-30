@@ -16,5 +16,5 @@ testBuilder_add_source(StackAllocator src/stack.cpp)
 testBuilder_build_shared_library(StackAllocator)
 
 testBuilder_add_source(stack_exe src/executable.cpp)
-testBuilder_add_library(stack_exe stack)
+testBuilder_add_library(stack_exe StackAllocator)
 testBuilder_build(stack_exe EXECUTABLES)
