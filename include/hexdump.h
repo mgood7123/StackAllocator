@@ -4,19 +4,21 @@
 #include <cctype>
 #include <iomanip>
 #include <ostream>
+#include <functional>
 
-template <unsigned RowSize, bool ShowAscii>
+template <unsigned RowSize, bool ShowAscii, typename T>
 struct CustomHexdump
 {
-    CustomHexdump(const char * indent, const void* data, unsigned length) :
-        indent(indent), mData(static_cast<const unsigned char*>(data)), mLength(length) { }
+    CustomHexdump(const char * indent, const T* data, unsigned length, std::function<void(const T* in, int*outHex, char*outChar)> conv = [](const T * in, int*outHex, char*outChar) { *outHex = (int)*in; *outChar = (char)*in; }) :
+    indent(indent), mData(data), mLength(length), conv(conv) { }
     const char * indent;
-    const unsigned char* mData;
+    const T* mData;
     const unsigned mLength;
+    const std::function<void(const T* in, int*outHex, char*outChar)> conv;
 };
 
-template <unsigned RowSize, bool ShowAscii>
-std::ostream& operator<<(std::ostream& out, const CustomHexdump<RowSize, ShowAscii>& dump)
+template <unsigned RowSize, bool ShowAscii, typename T>
+std::ostream& operator<<(std::ostream& out, const CustomHexdump<RowSize, ShowAscii, T>& dump)
 {
     out.fill('0');
     for (int i = 0; i < dump.mLength; i += RowSize)
@@ -26,14 +28,17 @@ std::ostream& operator<<(std::ostream& out, const CustomHexdump<RowSize, ShowAsc
         {
             if (i + j < dump.mLength)
             {
-                out << std::hex << std::setw(2) << static_cast<int>(dump.mData[i + j]) << " ";
+                int h;
+                char c;
+                dump.conv(std::addressof(dump.mData[i + j]), &h, &c);
+                out << std::hex << std::setw(2) << h << " ";
             }
             else
             {
                 out << "   ";
             }
         }
-
+        
         out << " ";
         if (ShowAscii)
         {
@@ -41,9 +46,12 @@ std::ostream& operator<<(std::ostream& out, const CustomHexdump<RowSize, ShowAsc
             {
                 if (i + j < dump.mLength)
                 {
-                    if (std::isprint(dump.mData[i + j]))
+                    int h;
+                    char c;
+                    dump.conv(std::addressof(dump.mData[i + j]), &h, &c);
+                    if (std::isprint(c))
                     {
-                        out << static_cast<char>(dump.mData[i + j]);
+                        out << c;
                     }
                     else
                     {
@@ -57,6 +65,6 @@ std::ostream& operator<<(std::ostream& out, const CustomHexdump<RowSize, ShowAsc
     return out;
 }
 
-typedef CustomHexdump<16, true> Hexdump;
+typedef CustomHexdump<16, true, char> Hexdump;
 
 #endif // HEXDUMP_HPP

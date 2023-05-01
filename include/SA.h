@@ -56,7 +56,7 @@ namespace SA {
             return size_;
         }
         void print(size_t length) {
-            Logw(CustomHexdump<8, true>("ptr: ", ptr, length));
+            Logw(CustomHexdump<8, true, uint8_t>("ptr: ", ptr, length));
         }
         virtual ~Page() {
             Logib();
