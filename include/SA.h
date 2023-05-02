@@ -1,3 +1,5 @@
+#pragma once
+
 #include "log.h"
 #include "hexdump.h"
 #include <forward_list>
