@@ -155,6 +155,25 @@ namespace SA {
         T* alloc(Args && ... args) {
             size_t s = sizeof(T);
             if (s != 0) {
+                T * p = reinterpret_cast<T*>(list.add(false, false, s, [&](void*ptr, size_t s){
+                    ((T*)ptr)->~T();
+                    m.lock();
+                    memory_usage -= s;
+                    m.unlock();
+                }));
+                new(p) T(args...);
+                m.lock();
+                memory_usage += s;
+                m.unlock();
+                return p;
+            }
+            return nullptr;
+        }
+
+        template <typename T, typename ... Args>
+        T* allocWithAllocationTracking(Args && ... args) {
+            size_t s = sizeof(T);
+            if (s != 0) {
                 T * p = reinterpret_cast<T*>(list.add(false, true, s, [&](void*ptr, size_t s){
                     ((T*)ptr)->~T();
                     m.lock();
@@ -172,6 +191,25 @@ namespace SA {
 
         template <typename T, typename ... Args>
         T* allocWithVerboseContents(Args && ... args) {
+            size_t s = sizeof(T);
+            if (s != 0) {
+                T * p = reinterpret_cast<T*>(list.add(true, false, s, [&](void*ptr, size_t s){
+                    ((T*)ptr)->~T();
+                    m.lock();
+                    memory_usage -= s;
+                    m.unlock();
+                }));
+                new(p) T(args...);
+                m.lock();
+                memory_usage += s;
+                m.unlock();
+                return p;
+            }
+            return nullptr;
+        }
+
+        template <typename T, typename ... Args>
+        T* allocWithAllocationTrackingAndVerboseContents(Args && ... args) {
             size_t s = sizeof(T);
             if (s != 0) {
                 T * p = reinterpret_cast<T*>(list.add(true, true, s, [&](void*ptr, size_t s){
