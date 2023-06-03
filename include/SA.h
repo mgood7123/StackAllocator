@@ -12,8 +12,10 @@ namespace SA {
         mutable size_t size_;
         mutable std::function<void(void*, size_t)> destructor;
         bool log_memory = false;
+        bool log_contents = false;
         void moveData(const Page<T> * from, Page<T> * to) {
             to->log_memory = from->log_memory;
+            to->log_contents = from->log_contents;
             if (size_ != 0) {
                 if (from->log_memory) {
                     Logib();
@@ -29,9 +31,9 @@ namespace SA {
             }
         }
         public:
-        Page() : Page(false, 0) {}
-        Page(size_t size, std::function<void(void*, size_t)> destructor = [](void*ptr, size_t){}) : Page(log_memory, size, destructor) {}
-        Page(bool log_memory, size_t size, std::function<void(void*, size_t)> destructor = [](void*ptr, size_t){}) : size_(size), log_memory(log_memory) {
+        Page() : Page(false, false, 0) {}
+        Page(size_t size, std::function<void(void*, size_t)> destructor = [](void*ptr, size_t){}) : Page(false, false, size, destructor) {}
+        Page(bool log_contents, bool log_memory, size_t size, std::function<void(void*, size_t)> destructor = [](void*ptr, size_t){}) : size_(size), log_memory(log_memory), log_contents(log_contents) {
             if (size_ != 0) {
                 ptr = size == 0 ? nullptr : new T[size];
                 this->destructor = destructor;
@@ -83,7 +85,9 @@ namespace SA {
                     Logib();
                     printf("deallocating page: %p with size %zu\n", ptr, size_);
                     Logr();
-                    print(size_);
+                    if (log_contents) {
+                        print(size_);
+                    }
                 }
                 destructor(ptr, size_);
                 delete[] ptr;
@@ -102,16 +106,16 @@ namespace SA {
         
         public:
         void* add(std::function<void(void*, size_t)> destructor = [](void*ptr, size_t){}) {
-            return add(false, page_size, destructor);
+            return add(false, false, page_size, destructor);
         }
-        void* add(bool log_memory, std::function<void(void*, size_t)> destructor = [](void*ptr, size_t){}) {
-            return add(log_memory, page_size, destructor);
+        void* add(bool log_contents, bool log_memory, std::function<void(void*, size_t)> destructor = [](void*ptr, size_t){}) {
+            return add(log_contents, log_memory, page_size, destructor);
         }
         void* add(size_t size, std::function<void(void*, size_t)> destructor = [](void*ptr, size_t){}) {
-            return add(false, page_size, destructor);
+            return add(false, false, page_size, destructor);
         }
-        void* add(bool log_memory, size_t size, std::function<void(void*, size_t)> destructor = [](void*ptr, size_t){}) {
-            pages.emplace_front(log_memory, size, destructor);
+        void* add(bool log_contents, bool log_memory, size_t size, std::function<void(void*, size_t)> destructor = [](void*ptr, size_t){}) {
+            pages.emplace_front(log_contents, log_memory, size, destructor);
             page_count++;
             return pages.front().data();
         }
@@ -130,7 +134,7 @@ namespace SA {
         T* alloc(Args && ... args) {
             size_t s = sizeof(T);
             if (s != 0) {
-                T * p = reinterpret_cast<T*>(list.add(false, s, [](void*ptr, size_t unused){
+                T * p = reinterpret_cast<T*>(list.add(false, false, s, [](void*ptr, size_t unused){
                     ((T*)ptr)->~T();
                 }));
                 new(p) T(args...);
@@ -151,7 +155,26 @@ namespace SA {
         T* alloc(Args && ... args) {
             size_t s = sizeof(T);
             if (s != 0) {
-                T * p = reinterpret_cast<T*>(list.add(true, s, [&](void*ptr, size_t s){
+                T * p = reinterpret_cast<T*>(list.add(false, true, s, [&](void*ptr, size_t s){
+                    ((T*)ptr)->~T();
+                    m.lock();
+                    memory_usage -= s;
+                    m.unlock();
+                }));
+                new(p) T(args...);
+                m.lock();
+                memory_usage += s;
+                m.unlock();
+                return p;
+            }
+            return nullptr;
+        }
+
+        template <typename T, typename ... Args>
+        T* allocWithVerboseContents(Args && ... args) {
+            size_t s = sizeof(T);
+            if (s != 0) {
+                T * p = reinterpret_cast<T*>(list.add(true, true, s, [&](void*ptr, size_t s){
                     ((T*)ptr)->~T();
                     m.lock();
                     memory_usage -= s;
