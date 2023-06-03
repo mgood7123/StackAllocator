@@ -2,7 +2,7 @@
 
 this was going to be a stack based allocator but instead this turned into an allocation tracker instead
 
-use namespace SA 
+use namespace SA
 
 includes `Log` i, w, e, and a for logging
 
@@ -16,7 +16,25 @@ includes `Log` i, w, e, and a for logging
 
 the destructor `~Allocator` deallocates all allocated memory via the `alloc<T>()` function
 
+`dealloc(void*)` deallocates an object obtained via `alloc<T>()`, passing `nullptr`, `NULL`, or `0` does nothing, `please note that, due to address recycling by allocators, it is UB to pass an object that has previously been deallocated, or an object not obtained by this instance`
+
+NOTE: `dealloc(void*)` can be used to `manually free memory immediately` instead of `freeing all at once at`, this `may` improve performance if we have too many objects being freed at one time
+
 multiple instances of `SA::Allocator` can co-exist and hold their own allocations
+
+`SA::AllocatorWithMemUsage` is an allocator that additionally keeps track of memory usage and provides pointer logging
+
+`allocWithVerboseAllocationTracking` additionally instructs the `Page` to log its allocation tracking
+
+`allocWithVerboseAllocationTrackingAndVerboseContents` additionally instructs the `Page` to `output the contents` of the `entire allocation` upon `deletion`, in addition to logging its allocation tracking
+
+`SA::DefaultAllocatorWithMemUsage` is a type alias for `SA::AllocatorWithMemUsage<SA::PageList<4096>>`
+
+multiple instances of `SA::AllocatorWithMemUsage` can co-exist and hold their own allocations
+
+`SA::AllocatorBase` is the base class of both `SA::Allocator` and `SA::AllocatorWithMemUsage`
+
+`SA::AllocatorBase` is just an empty structure
 
 ## example
 
@@ -37,13 +55,13 @@ namespace A {
 }
 int main () {
     SA::Logi("hi");
-    SA::Allocator a;
-    SA::DefaultAllocator * ap = a.alloc<SA::DefaultAllocator>();
-    ap->alloc<int>()[0] = 567884;
-    auto * str = ap->alloc<std::string>();
+    SA::AllocatorWithMemUsage a;
+    SA::DefaultAllocatorWithMemUsage * ap = a.allocWithVerboseAllocationTrackingAndVerboseContents<SA::DefaultAllocatorWithMemUsage>();
+    ap->allocWithVerboseAllocationTrackingAndVerboseContents<int>()[0] = 567884;
+    auto * str = ap->allocWithVerboseAllocationTrackingAndVerboseContents<std::string>();
     str[0] = "hello";
     SA::Logi(str[0]);
-    a.alloc<A::A>(a.alloc<A::A>());
+    a.allocWithVerboseAllocationTrackingAndVerboseContents<A::A>(a.allocWithVerboseAllocationTrackingAndVerboseContents<A::A>());
     return 0;
 }
 ```

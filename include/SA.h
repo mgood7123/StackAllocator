@@ -119,6 +119,26 @@ namespace SA {
             page_count++;
             return pages.front().data();
         }
+
+        // calling this more than once with the same ptr, or a pointer not obtained by this instance, can lead to UB due to address recycling
+        // calling with nullptr does nothing
+        void remove(void* ptr) {
+            if (ptr == nullptr) {
+                return;
+            }
+
+            size_t items_removed = 0;
+
+            pages.remove_if([&](DefaultPage & page) {
+                if (page.data() == ptr) {
+                    items_removed++;
+                    return true;
+                }
+                return false;
+            });
+
+            page_count -= items_removed;
+        }
     };
     
     using DefaultPageList = PageList<4096>;
@@ -130,6 +150,10 @@ namespace SA {
         PageList list;
         public:
         
+        void dealloc(void* ptr) {
+            list.remove(ptr);
+        }
+
         template <typename T, typename ... Args>
         T* alloc(Args && ... args) {
             size_t s = sizeof(T);
@@ -150,6 +174,10 @@ namespace SA {
         size_t memory_usage;
         std::mutex m;
         public:
+
+        void dealloc(void* ptr) {
+            list.remove(ptr);
+        }
         
         template <typename T, typename ... Args>
         T* alloc(Args && ... args) {
@@ -171,7 +199,7 @@ namespace SA {
         }
 
         template <typename T, typename ... Args>
-        T* allocWithAllocationTracking(Args && ... args) {
+        T* allocWithVerboseAllocationTracking(Args && ... args) {
             size_t s = sizeof(T);
             if (s != 0) {
                 T * p = reinterpret_cast<T*>(list.add(false, true, s, [&](void*ptr, size_t s){
@@ -190,26 +218,7 @@ namespace SA {
         }
 
         template <typename T, typename ... Args>
-        T* allocWithVerboseContents(Args && ... args) {
-            size_t s = sizeof(T);
-            if (s != 0) {
-                T * p = reinterpret_cast<T*>(list.add(true, false, s, [&](void*ptr, size_t s){
-                    ((T*)ptr)->~T();
-                    m.lock();
-                    memory_usage -= s;
-                    m.unlock();
-                }));
-                new(p) T(args...);
-                m.lock();
-                memory_usage += s;
-                m.unlock();
-                return p;
-            }
-            return nullptr;
-        }
-
-        template <typename T, typename ... Args>
-        T* allocWithAllocationTrackingAndVerboseContents(Args && ... args) {
+        T* allocWithVerboseAllocationTrackingAndVerboseContents(Args && ... args) {
             size_t s = sizeof(T);
             if (s != 0) {
                 T * p = reinterpret_cast<T*>(list.add(true, true, s, [&](void*ptr, size_t s){
