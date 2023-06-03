@@ -37,6 +37,7 @@ namespace SA {
     void Loga(const T & s) {
         Logeb();
         std::cout << s;
+        std::cout << std::endl;
         Loga();
     }
 }
