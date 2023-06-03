@@ -20,6 +20,8 @@ the destructor `~Allocator` deallocates all allocated memory via the `alloc<T>()
 
 NOTE: `dealloc(void*)` can be used to `manually free memory immediately` instead of `freeing all at once at`, this `may` improve performance if we have too many objects being freed at one time
 
+NOTE: `dealloc`, `CANNOT` and `WILL NOT` recursively free any memory that may be contained `within the pointer`
+
 multiple instances of `SA::Allocator` can co-exist and hold their own allocations
 
 `SA::AllocatorWithMemUsage` is an allocator that additionally keeps track of memory usage and provides pointer logging
