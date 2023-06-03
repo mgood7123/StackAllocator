@@ -12,7 +12,6 @@ endif()
 
 testBuilder_add_include(StackAllocator include)
 testBuilder_add_source(StackAllocator src/log.cpp)
-testBuilder_add_source(StackAllocator src/stack.cpp)
 testBuilder_build_shared_library(StackAllocator)
 
 testBuilder_add_source(stack_exe src/executable.cpp)
