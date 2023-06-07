@@ -10,18 +10,19 @@
 #include <cstdint>
 #include <algorithm>
 #include "log.h"
+#include "hexdump.h"
 
 namespace SA {
 
     template<class T>
-    struct Mallocator
+    struct SecureMallocator
     {
         typedef T value_type;
     
-        Mallocator () = default;
+        SecureMallocator () = default;
     
         template<class U>
-        constexpr Mallocator (const Mallocator <U>&) noexcept {}
+        constexpr SecureMallocator (const SecureMallocator <U>& o) noexcept {}
     
         [[nodiscard]] T* allocate(std::size_t n)
         {
@@ -31,9 +32,6 @@ namespace SA {
             // calloc initializes memory and stops valgrind complaining about uninitialized memory use
             if (auto p = static_cast<T*>(std::calloc(n, sizeof(T))))
             {
-                std::cout << "Alloc: allocated and zeroed " << sizeof(T) * n
-                        << " bytes at " << std::hex << std::showbase
-                        << reinterpret_cast<void*>(p) << std::dec << '\n';
                 return p;
             }
     
@@ -46,13 +44,7 @@ namespace SA {
             volatile uint8_t* s = reinterpret_cast<uint8_t*>(p);
             volatile uint8_t* e = s + (sizeof(T)*n);
             std::fill(s, e, 0);
-            std::cout << "Dealloc: zeroed " << sizeof(T) * n
-                    << " bytes at " << std::hex << std::showbase
-                    << reinterpret_cast<void*>(p) << std::dec << '\n';
             std::free(p);
-            std::cout << "Dealloc: freed " << sizeof(T) * n
-                    << " bytes at " << std::hex << std::showbase
-                    << reinterpret_cast<void*>(p) << std::dec << '\n';
         }
 
         void deallocate(T* p, std::size_t n) noexcept
@@ -62,12 +54,6 @@ namespace SA {
         }
 
     private:
-        void report(T* p, std::size_t n, bool alloc = true) const
-        {
-            std::cout << (alloc ? "Alloc: " : "Dealloc: ") << sizeof(T) * n
-                    << " bytes at " << std::hex << std::showbase
-                    << reinterpret_cast<void*>(p) << std::dec << '\n';
-        }
     };
 
     using pair = std::pair<std::pair<void*, size_t>, std::function<void(std::pair<void*, size_t>)>>;
@@ -75,7 +61,7 @@ namespace SA {
     struct Allocator {
         const char * tag;
 
-        std::forward_list<pair, Mallocator<pair>> l;
+        std::forward_list<pair, SecureMallocator<pair>> l;
 
         Allocator() : Allocator("NO TAG") {}
         Allocator(const char * tag) : tag(tag) {}
@@ -92,7 +78,7 @@ namespace SA {
         void * internal_alloc(size_t size) {
             void * p = nullptr;
             while (p == nullptr) {
-                p = Mallocator<uint8_t>().allocate(size);
+                p = SecureMallocator<uint8_t>().allocate(size);
                 if (p == nullptr) {
                     auto handler = std::get_new_handler();
                     if (handler == nullptr) {
@@ -126,9 +112,9 @@ namespace SA {
         }
 
         template <typename T>
-        T* allocArray(size_t count) {
+        T allocArray(size_t count) {
             printf("[ Allocator instance: %p ] [ %s ] allocating pointer with size %zu (array size: %zu, element size: %zu)\n", this, tag, sizeof(T)*count, count, sizeof(T));
-            T* p = reinterpret_cast<T*>(internal_alloc(sizeof(T)*count));
+            T p = reinterpret_cast<T>(internal_alloc(sizeof(T)*count));
             printf("[ Allocator instance: %p ] [ %s ] allocated pointer: %p with size %zu (array size: %zu, element size: %zu)\n", this, tag, p, sizeof(T)*count, count, sizeof(T));
             std::pair<void*, size_t> pa;
             pa.first = p;
@@ -158,7 +144,7 @@ namespace SA {
             if (p != nullptr) {
                 printf("[ Allocator instance: %p ] [ %s ] dealloc(void* ptr) deallocating pointer: %p with size %zu\n", this, tag, p->first.first, p->first.second);
                 p->second(p->first);
-                Mallocator<uint8_t>().deallocate((uint8_t*)p->first.first, p->first.second);
+                SecureMallocator<uint8_t>(tag).deallocate((uint8_t*)p->first.first, p->first.second);
                 p->first.first = nullptr;
                 p->first.second = 0;
                 printf("[ Allocator instance: %p ] [ %s ] dealloc(void* ptr) deallocated pointer: %p\n", this, tag, ptr);
@@ -173,9 +159,8 @@ namespace SA {
             for (pair & p : l) {
                 if (p.first.first != nullptr) {
                     printf("[ Allocator instance: %p ] [ %s ] ~Allocator() deallocating pointer: %p with size %zu\n", this, tag, p.first.first, p.first.second);
-                    Logw(CustomHexdump<16, true, uint8_t>(tag, "ptr: ", reinterpret_cast<uint8_t*>(p.first.first), p.first.second));
                     p.second(p.first);
-                    Mallocator<uint8_t>().deallocate((uint8_t*)p.first.first, p.first.second);
+                    SecureMallocator<uint8_t>(tag).deallocate((uint8_t*)p.first.first, p.first.second);
                     printf("[ Allocator instance: %p ] [ %s ] ~Allocator() deallocated pointer: %p\n", this, tag, p.first.first);
                     p.first.first = nullptr;
                     p.first.second = 0;
@@ -187,9 +172,9 @@ namespace SA {
 }
 
 template<class T, class U>
-bool operator==(const SA::Mallocator <T>&, const SA::Mallocator <U>&) { return true; }
+bool operator==(const SA::SecureMallocator <T>&, const SA::SecureMallocator <U>&) { return true; }
  
 template<class T, class U>
-bool operator!=(const SA::Mallocator <T>&, const SA::Mallocator <U>&) { return false; }
+bool operator!=(const SA::SecureMallocator <T>&, const SA::SecureMallocator <U>&) { return false; }
 
 #endif
