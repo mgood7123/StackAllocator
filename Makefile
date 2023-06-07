@@ -124,7 +124,7 @@ rebuild_test_release:
 	make clean_release
 	make test_release
 
-valgrind_flags = --leak-check=full --show-leak-kinds=all -s --track-origins=yes
+valgrind_flags = --leak-check=full --show-leak-kinds=all --track-origins=yes
 
 test_valgrind: test_debug_valgrind test_release_valgrind
 rebuild_test_valgrind: rebuild_test_debug_valgrind rebuild_test_release_valgrind

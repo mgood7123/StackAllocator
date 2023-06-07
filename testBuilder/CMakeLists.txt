@@ -35,7 +35,7 @@ macro(testBuilder_build testName outDirectory)
     add_executable(testBuilder_executables_${testName} ${testBuilder_SOURCES_LIST_${testName}})
     
     if (testBuilder_INCLUDE_LIST_${testName})
-        target_include_directories(${testName} PUBLIC ${testBuilder_INCLUDE_LIST_${testName}})
+        target_include_directories(testBuilder_executables_${testName} PUBLIC ${testBuilder_INCLUDE_LIST_${testName}})
     endif()
     
     target_link_libraries(testBuilder_executables_${testName} ${testBuilder_LIBRARIES_LIST_${testName}})

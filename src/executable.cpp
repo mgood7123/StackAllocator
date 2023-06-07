@@ -17,11 +17,12 @@ namespace A {
 int main () {
     SA::Logi("hi");
     SA::Allocator a;
-    SA::DefaultAllocator * ap = a.alloc<SA::DefaultAllocator>();
+    SA::Allocator * ap = a.alloc<SA::Allocator>();
     ap->alloc<int>()[0] = 567884;
     auto * str = ap->alloc<std::string>();
     str[0] = "hello";
     SA::Logi(str[0]);
-    a.alloc<A::A>(a.alloc<A::A>());
+    A::A * ptr = a.alloc<A::A>();
+    a.alloc<A::A>(ptr);
     return 0;
 }
