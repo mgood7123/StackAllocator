@@ -1,34 +1,48 @@
-#ifndef HEXDUMP_HPP
-#define HEXDUMP_HPP
+#ifndef SA_HEXDUMP_HPP
+#define SA_HEXDUMP_HPP
 
 #include <cctype>
 #include <iomanip>
 #include <ostream>
 #include <functional>
 
+namespace SA {
+
 template <unsigned RowSize, bool ShowAscii, typename T>
 struct CustomHexdump
 {
-    CustomHexdump(const char * indent, const T* data, unsigned length, std::function<void(const T* in, int*outHex, char*outChar)> conv = [](const T * in, int*outHex, char*outChar) { *outHex = (int)*in; *outChar = (char)*in; }) :
-    CustomHexdump("CustomHexDump (NO TAG HAS BEEN SET)", indent, data, length, conv) { }
-    CustomHexdump(const char * tag, const char * indent, const T* data, unsigned length, std::function<void(const T* in, int*outHex, char*outChar)> conv = [](const T * in, int*outHex, char*outChar) { *outHex = (int)*in; *outChar = (char)*in; }) :
-    tag(tag), indent(indent), mData(data), mLength(length), conv(conv) { }
-    const char * tag;
+    CustomHexdump(const char * indent, const void* data, unsigned length, std::function<void(const T* in, int*outHex, char*outChar)> conv = [](const T * in, int*outHex, char*outChar) { *outHex = (int)*in; *outChar = (char)*in; }) :
+    indent(indent), mData(static_cast<const T*>(data)), mLength(length), conv(conv) { }
     const char * indent;
     const T* mData;
     const unsigned mLength;
     const std::function<void(const T* in, int*outHex, char*outChar)> conv;
+
+    class save_cout {
+        std::ostream & s;
+        std::ios_base::fmtflags f;
+
+        public:
+
+        save_cout() : save_cout(std::cout) {}
+        save_cout(std::ostream & o) : s(o), f(o.flags()) {}
+        template <typename T2> std::ostream & operator<<(const T2 & item) { return s << item; }
+        std::ostream & operator*() { return s; }
+        std::ostream * operator->() { return &s; }
+        ~save_cout() { s.setf(f); }
+    };
+
 };
 
-#define HEXDUMP__VAL(in, out, len) char out[len+1]; out[len] = 0; snprintf(out, len+1, "%0*X", len, in);
-
 template <unsigned RowSize, bool ShowAscii, typename T>
-std::ostream& operator<<(std::ostream& out, const CustomHexdump<RowSize, ShowAscii, T>& dump)
+std::ostream& operator<<(std::ostream& out_, const CustomHexdump<RowSize, ShowAscii, T>& dump)
 {
+    typename CustomHexdump<RowSize, ShowAscii, T>::save_cout out(out_);
+    *out << std::noshowbase << std::dec;
+    out->fill('0');
     for (int i = 0; i < dump.mLength; i += RowSize)
     {
-        HEXDUMP__VAL(i, i_h, 6);
-        out << "[ " << dump.tag << " ] " << dump.indent << "0x" << i_h << ": ";
+        out << dump.indent << "0x" << std::setw(6) << std::hex << i << ": ";
         for (int j = 0; j < RowSize; ++j)
         {
             if (i + j < dump.mLength)
@@ -36,8 +50,7 @@ std::ostream& operator<<(std::ostream& out, const CustomHexdump<RowSize, ShowAsc
                 int h;
                 char c;
                 dump.conv(std::addressof(dump.mData[i + j]), &h, &c);
-                HEXDUMP__VAL(h, h_h, 2);
-                out << h_h << " ";
+                out << std::hex << std::setw(2) << h << " ";
             }
             else
             {
@@ -66,12 +79,13 @@ std::ostream& operator<<(std::ostream& out, const CustomHexdump<RowSize, ShowAsc
                 }
             }
         }
-        out << std::endl;
-        out << std::dec << std::setw(0);
+        *out << std::endl;
     }
-    return out;
+    return out_;
 }
 
 typedef CustomHexdump<16, true, char> Hexdump;
 
-#endif // HEXDUMP_HPP
+}
+
+#endif // SA_HEXDUMP_HPP

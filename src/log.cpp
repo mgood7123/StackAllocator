@@ -16,7 +16,7 @@ void SA::Logeb() {
     flush();
 }
 void SA::Logr() {
-    printf("\033[37m");
+    printf("\033[00m");
     flush();
 }
 void SA::Loga() {
