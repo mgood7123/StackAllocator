@@ -1,0 +1,40 @@
+#IncludeRegexLine: ^[ 	]*[#%][ 	]*(include|import)[ 	]*[<"]([^">]+)([">])
+
+#IncludeRegexScan: ^.*$
+
+#IncludeRegexComplain: ^$
+
+#IncludeRegexTransform: 
+
+../include/alloc_hook.h
+alloc_hook_c++
+-
+alloc_hook_c.h
+-
+
+../include/alloc_hook_c++
+alloc_hook_c.h
+-
+
+../include/alloc_hook_c.h
+stddef.h
+-
+stdbool.h
+-
+stdint.h
+-
+cstddef
+-
+cstdint
+-
+type_traits
+-
+utility
+-
+memory
+-
+
+/home/DATA/git/Gecko/HTML/qparse/StackAllocator/alloc_hook/src/null_c.c
+alloc_hook.h
+-
+

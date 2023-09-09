@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <limits>
 #include "hexdump.h"
+#include <cassert>
 
 #ifndef RTTI_ENABLED
     #if defined(__clang__)
@@ -38,14 +39,93 @@
 #endif
 
 #define SA____STACK_ALLOCATOR__REF_ONLY(C, CT) C() { if (log) { Logeb(); printf("%s()\n", #C); Logr(); } }; C(const CT & other) = delete; C(CT && other) = delete; CT & operator=(const CT & other) = delete; CT & operator=(CT && other) = delete
+#define SA____STACK_ALLOCATOR__REF_ONLY_T(C, T) C() { if (log) { SA::SINGLETONS::PER_TYPE<T> t; Logeb(); printf("%s<%s>()\n", #C, t.demangled); Logr(); } }; C(const C<T> & other) = delete; C(C<T> && other) = delete; C<T> & operator=(const C<T> & other) = delete; C<T> & operator=(C<T> && other) = delete
 #define SA____STACK_ALLOCATOR__REF_ONLY_NO_DEFAULT_CONSTRUCTOR(C, CT) C(const CT & other) = delete; C(CT && other) = delete; CT & operator=(const CT & other) = delete; CT & operator=(CT && other) = delete
 
 namespace SA {
-    bool log = false;
+
+    struct AllocatorBase {};
+
+    template <typename T> struct Mallocator;
+
+    struct TrackedAllocator;
+
+    extern bool log;
+
+    struct SINGLETONS;
+    extern SINGLETONS & GET_SINGLETONS();
+
+    extern TrackedAllocator * GET_GLOBAL();
+    extern bool IS_GLOBAL(AllocatorBase * allocator);
 
     struct SINGLETONS {
-        std::recursive_mutex mutex;
+        class recursive_mutex {
+            size_t lock_count_ = 0;
+            std::recursive_mutex mutex;
+
+            public:
+
+            class Scoped {
+                recursive_mutex * scope;
+                
+                public:
+
+                Scoped(recursive_mutex * s) : scope(s) {
+                    scope->lock();
+                }
+                
+                Scoped(const Scoped & other) = delete;
+                Scoped & operator=(const Scoped & other) = delete;
+
+                Scoped(Scoped && other) = default;
+                Scoped & operator=(Scoped && other) = default;
+
+                ~Scoped() {
+                    scope->unlock();
+                }
+            };
+
+            Scoped scoped() { return {this}; }
+
+            size_t lock_count() { return lock_count_; }
+
+            void lock() { mutex.lock(); lock_count_++; }
+            void unlock() { lock_count_--; mutex.unlock(); }
+            bool try_lock () {
+                if (mutex.try_lock()) {
+                    lock_count_++;
+                    return true;
+                }
+                return false;
+            }
+        };
+
+        recursive_mutex mutex;
+
         size_t memory_usage = 0;
+        Mallocator<uint8_t> mallocator;
+
+        static void * inspect_calloc_return_value(void * return_value) {
+            if (log) {
+                Logib();
+                printf("CALLOC(%p)\n", return_value);
+                Logr();
+            }
+            return return_value;
+        }
+
+        static void * inspect_calloc(size_t memb, size_t size) {
+            return inspect_calloc_return_value(calloc(memb, size));
+        }
+
+        static void inspect_free(void * ptr) {
+            if (log) {
+                Logib();
+                printf("FREE(%p)\n", ptr);
+                Logr();
+            }
+            free(ptr);
+        }
 
         template <typename T>
         struct PER_TYPE {
@@ -63,12 +143,12 @@ namespace SA {
                     int status = -1;
                     auto tmp = abi::__cxa_demangle(ti.name(), NULL, NULL, &status);
                     demangled = strdup(tmp);
-                    std::free(tmp);
+                    inspect_free(tmp);
 #elif defined(__GNUC__)
                     int status = -1;
                     auto tmp = abi::__cxa_demangle(ti.name(), NULL, NULL, &status);
                     demangled = strdup(tmp);
-                    std::free(tmp);
+                    inspect_free(tmp);
 #elif defined(_MSC_VER)
                     demangled = dup(it.name());
 #else
@@ -92,359 +172,542 @@ namespace SA {
                     printf("~PER_TYPE<%s>()\n", demangled);
                     Logr();
                 }
-                std::free(demangled);
+                inspect_free(demangled);
             }
         };
 
-        struct LL {
-            SA____STACK_ALLOCATOR__REF_ONLY(LL, LL);
-            struct ID {
-                const std::type_info & info;
-                void * data = nullptr;
-                std::function<void(void*)> destructor;
-                ID(const std::type_info & info, void * data, std::function<void(void*)> destructor) : info(info), data(data), destructor(destructor) {}
+        template <typename T, typename ... Args>
+        [[nodiscard]] static T* alloc(Args && ... args) {
+            T * ptr;
+            ptr = static_cast<T*>(inspect_calloc(1, sizeof(T)));
+            new (ptr) T(std::forward<Args>(args)...);
+            return ptr;
+        }
+
+        template <typename T>
+        static void dealloc(T ** ptr) {
+            if (*ptr != nullptr) {
+                (*ptr)->~T();
+                inspect_free(*ptr);
+                *ptr = nullptr;
+            }
+        }
+
+        template <typename T>
+        struct SA__LinkedList {
+
+            SA____STACK_ALLOCATOR__REF_ONLY_T(SA__LinkedList, T);
+
+            T * node = nullptr;
+            SA__LinkedList * next = nullptr;
+            SA__LinkedList * tail = nullptr;
+            size_t size = 0;
+
+            void verify_tail() {
+                if (size == 0) {
+                    assert(tail == nullptr);
+                } else if (size == 1) {
+                    assert(tail == this);
+                } else {
+                    assert(tail != nullptr);
+                    assert(tail != this);
+                    assert(tail->next == nullptr);
+                }
+            }
+
+            std::function<T*()> onNodeAlloc = []() {
+                return alloc<T>();
             };
 
-            ID * value = nullptr;
-            LL* next = nullptr;
-            
-            template <typename T>
-            PER_TYPE<T> & get_per_type() {
-                LL * t = this;
-                LOOP:
-                if (t->value == nullptr) {
-                    t->value = static_cast<ID*>(calloc(sizeof(ID), 1));
-                    new(t->value) ID(typeid(T), calloc(sizeof(PER_TYPE<T>), 1), [](void*data){static_cast<PER_TYPE<T>*>(data)->~PER_TYPE<T>(); free(data);});
-                    new(t->value->data) PER_TYPE<T>();
-                    return *static_cast<PER_TYPE<T>*>(t->value->data);
-                } else if (t->value->info == typeid(T)) {
-                    return *static_cast<PER_TYPE<T>*>(t->value->data);
+            T* append_node() {
+                verify_tail();
+                if (tail == nullptr) {
+                    tail = this;
+                }
+                if(tail->node != nullptr) {
+                    tail->next = alloc<SA__LinkedList<T>>();
+                    tail = tail->next;
+                }
+                tail->node = onNodeAlloc();
+                size++;
+                verify_tail();
+                return tail->node;
+            }
+
+            T * find_or_add(std::function<bool(T*node)> pred) {
+                if (size == 0) {
+                    return append_node();
                 } else {
-                    if (t->next == nullptr) {
-                        t->next = static_cast<LL*>(calloc(sizeof(LL), 1));
-                        new(t->next) LL();
+                    verify_tail();
+                    if (size == 1) {
+                        if (pred(node)) {
+                            return node;
+                        } else {
+                            assert(next == nullptr);
+                            tail->next = alloc<SA__LinkedList<T>>();
+                            tail = tail->next;
+                            tail->node = onNodeAlloc();
+                            size++;
+                            verify_tail();
+                            return tail->node;
+                        }
                     }
-                    t = t->next;
-                    goto LOOP;
+                    auto current = this;
+                    if (size > 1) {
+                        Logwb();
+                        printf("searching %zu nodes...\n", size);
+                        Logr();
+                    }
+                    while(current->node != nullptr) {
+                        if (pred(current->node)) {
+                            verify_tail();
+                            return current->node;
+                        } else {
+                            if (current->next == nullptr) {
+                                assert(current == tail);
+                                tail->next = alloc<SA__LinkedList<T>>();
+                                tail = tail->next;
+                            }
+                            current = current->next;
+                        }
+                    }
+                    current->node = onNodeAlloc();
+                    size++;
+                    verify_tail();
+                    return current->node;
                 }
             }
-            ~LL() {
-                if (log) {
+
+            void remove_node_from_start() {
+                verify_tail();
+                dealloc(&node);
+                if (next != nullptr) {
+                    SA__LinkedList<T> * old = next;
+                    node = next->node;
+                    next = next->next;
+                    old->node = nullptr;
+                    old->next = nullptr;
+                    if (tail == old) tail = this;
+                    dealloc(&old);
+                } else {
+                    // we have removed this node, this->node == nullptr && this->next == nullptr, tail is now nullptr
+                    tail = nullptr;
+                }
+                size--;
+                verify_tail();
+            }
+
+            struct FoundNode {
+                SA__LinkedList<T> * before_found;
+                SA__LinkedList<T> * found;
+            };
+
+            void remove_node(FoundNode f) {
+                if (f.found == nullptr) {
                     Logeb();
-                    printf("~LL()\n");
+                    printf("f.found is nullptr, this is an error\n");
+                    Logr();
+                } else {
+                    if (f.found == this) {
+                        remove_node_from_start();
+                    } else {
+                        verify_tail();
+                        if (tail == f.found) tail = f.before_found;
+                        SA__LinkedList<T> * node_to_link = f.found->next;
+                        dealloc(&f.found->node);
+                        dealloc(&f.found);
+                        f.before_found->next = node_to_link;
+                        size--;
+                        verify_tail();
+                    }
+                }
+            }
+
+
+            FoundNode find_node(std::function<bool(T*node)> pred) {
+                verify_tail();
+                if (size == 0) return {nullptr, nullptr};
+                if (size == 1) if (pred(node)) return {this, this};
+                auto current = this;
+                auto prev = current;
+                if (size > 1) {
+                    Logwb();
+                    printf("searching %zu nodes...\n", size);
                     Logr();
                 }
-                LL * t = this;
-                LOOP:
-                if (t->value != nullptr) {
-                    t->value->destructor(t->value->data);
-                    t->value->~ID();
-                    free(t->value);
-                    t->value = nullptr;
-                }
-                if (t->next != nullptr) {
-                    LL * current = t;
-                    LL * next = t->next;
-                    if (current != this) {
-                        current->~LL();
-                        free(current);
-                        t = next;
+                while(current->node != nullptr) {
+                    if (pred(current->node)) {
+                        verify_tail();
+                        return {prev, current};
                     } else {
-                        t->value = next->value;
-                        t->next = next->next;
-                        next->value = nullptr;
-                        next->next = nullptr;
-                        next->~LL();
-                        free(next);
+                        if (current->next == nullptr) {
+                            verify_tail();
+                            return {nullptr, nullptr};
+                        }
+                        prev = current;
+                        current = current->next;
                     }
-                    goto LOOP;
                 }
+                verify_tail();
+                return {nullptr, nullptr};
+            }
+
+            void warn_ptr(const char * tag, void * ptr) {
+                verify_tail();
+                if (ptr != nullptr) {
+                    Logeb();
+                    printf("%s: COULD NOT FIND TRACKED POINTER %p\n", tag, ptr);
+                    Logr();
+                    // abort();
+                }
+            }
+
+            void remove_all() {
+                verify_tail();
+                while (size != 0) {
+                    remove_node_from_start();
+                }
+            }
+
+            virtual ~SA__LinkedList() {
+                if (log) {
+                    SA::SINGLETONS::PER_TYPE<T> t;
+                    Logeb();
+                    printf("~SA__LinkedList<%s>()\n", t.demangled);
+                    Logr();
+                }
+                remove_all();
             }
         };
 
-        LL per_type_linked_list;
+        struct ID {
+            SA____STACK_ALLOCATOR__REF_ONLY(ID, ID);
+            const std::type_info * info = nullptr;
+            void * data = nullptr;
+            std::function<void(void*)> destructor;
+            ID(const std::type_info * info, void * data, std::function<void(void*)> destructor) : info(info), data(data), destructor(destructor) {
+                if (log) {
+                    Logeb();
+                    printf("ID()\n");
+                    Logr();
+                }
+            }
+            ~ID() {
+                if (log) {
+                    Logeb();
+                    printf("~ID()\n");
+                    Logr();
+                }
+                destructor(data);
+            }
+        };
+
+        struct ID_LL : private SA__LinkedList<ID> {
+            using SA__LinkedList<ID>::size;
+            SA____STACK_ALLOCATOR__REF_ONLY(ID_LL, ID_LL);
+
+            template <typename T>
+            PER_TYPE<T> & get_per_type() {
+                onNodeAlloc = []() {
+                    auto & type = typeid(T);
+                    return alloc<ID>(&type, alloc<PER_TYPE<T>>(), [](void*data) {
+                        PER_TYPE<T>* p = static_cast<PER_TYPE<T>*>(data);
+                        dealloc(&p);
+                    });
+                };
+                return *static_cast<PER_TYPE<T>*>(find_or_add([](ID*node){return *node->info == typeid(T);})->data);
+            }
+
+            ~ID_LL() {
+                if (log) {
+                    Logeb();
+                    printf("~ID_LL()\n");
+                    Logr();
+                }
+            }
+
+            protected:
+        };
+
+        ID_LL per_type_linked_list;
 
         template <typename T>
         PER_TYPE<T> & per_type() {
             return per_type_linked_list.get_per_type<T>();
         }
 
-        struct LLP {
-            SA____STACK_ALLOCATOR__REF_ONLY(LLP, LLP);
-            void * value = nullptr;
-            LLP* next = nullptr;
-            size_t size = 0;
-            
+        struct PTR_LL : private SA__LinkedList<void*> {
+            using SA__LinkedList<void*>::size;
+            SA____STACK_ALLOCATOR__REF_ONLY(PTR_LL, PTR_LL);
+
+            public:
+
             void add_pointer(void * p) {
-                LLP * t = this;
-                LOOP:
-                if (t->value == nullptr) {
-                    t->value = p;
-                    size++;
-                } else {
-                    if (t->next == nullptr) {
-                        t->next = static_cast<LLP*>(calloc(sizeof(LLP), 1));
-                        new(t->next) LLP();
-                    }
-                    t = t->next;
-                    goto LOOP;
-                }
+                append_node()[0] = p;
             }
 
-            bool remove_pointer(void * p) {
-                LLP * t = this;
-                LOOP:
-                if (log) {
-                    Logeb();
-                    printf("REMOVE: comparing tracked pointer %p with wanted pointer %p\n", t->value, p);
-                    Logr();
-                }
-                if (t->value == p) {
-                    t->value = nullptr;
-                    if (t->next != nullptr) {
-                        LLP * current = t;
-                        LLP * next = t->next;
-                        if (current != this) {
-                            current->~LLP();
-                            free(current);
-                            t = next;
-                        } else {
-                            t->value = next->value;
-                            t->next = next->next;
-                            next->value = nullptr;
-                            next->next = nullptr;
-                            next->~LLP();
-                            free(next);
-                        }
+            void ** find_or_add_pointer(std::function<bool(void**node)> pred) {
+                bool f = false;
+                void ** ptr = find_or_add([&](void**ptr) {
+                    if (pred(ptr)) {
+                        f = true;
                     }
-                    size--;
-                    return true;
-                } else {
-                    if (t->next == nullptr) {
-                        return false;
-                    }
-                    t = t->next;
-                    goto LOOP;
-                }
+                    return f;
+                });
+                return ptr;
             }
 
             void ** find_pointer(void * p) {
-                LLP * t = this;
-                LOOP:
-                if (log) {
-                    Logeb();
-                    printf("FIND: comparing tracked pointer %p with wanted pointer %p\n", t->value, p);
-                    Logr();
-                }
-                if (t->value == p) {
-                    return &t->value;
-                } else {
-                    if (t->next == nullptr) {
-                        return nullptr;
-                    }
-                    t = t->next;
-                    goto LOOP;
-                }
+                return find_pointer(p, true);
             }
 
-            ~LLP() {
-                if (log) {
-                    Logeb();
-                    printf("~LLP()\n");
-                    Logr();
-                }
-                LLP * t = this;
-                LOOP:
-                if (t->value != nullptr) {
-                    t->value = nullptr;
-                }
-                if (t->next != nullptr) {
-                    LLP * current = t;
-                    LLP * next = t->next;
-                    if (current != this) {
-                        current->~LLP();
-                        free(current);
-                        t = next;
-                    } else {
-                        t->value = next->value;
-                        t->next = next->next;
-                        next->value = nullptr;
-                        next->next = nullptr;
-                        next->~LLP();
-                        free(next);
+            void ** find_pointer(void * p, bool warn_not_found) {
+                if (size == 0) {
+                    if (warn_not_found) {
+                        warn_ptr("FIND", p);
                     }
+                    return nullptr;
+                }
+                auto l = find_node([&](void**ptr) {
+                    return *ptr == p;
+                });
+                if (l.found != nullptr) {
+                    if (log) {
+                        Logeb();
+                        printf("FIND: found tracked pointer %p with wanted pointer %p\n", *l.found->node, p);
+                        Logr();
+                    }
+                    return l.found->node;
+                } else {
+                    if (warn_not_found) {
+                        warn_ptr("FIND", p);
+                    }
+                }
+                return nullptr;
+            }
+
+            bool remove_all_pointers_except(void * p) {
+                if (size == 0) {
+                    warn_ptr("REMOVE ALL EXCEPT", p);
+                    return false;
+                }
+                bool f = false;
+                LOOP:
+                auto l = find_node([&](void**ptr) {
+                    return *ptr != p;
+                });
+                if (l.found != nullptr) {
+                    f = true;
+                    if (log) {
+                        Logeb();
+                        printf("REMOVE ALL EXCEPT: found tracked pointer %p\n", *l.found->node);
+                        Logr();
+                    }
+                    remove_node(l);
                     goto LOOP;
                 }
-                size = 0;
+                return f;
+            }
+
+            bool remove_pointer(void * p) {
+                if (size == 0) {
+                    warn_ptr("REMOVE", p);
+                    return false;
+                }
+                auto l = find_node([&](void**ptr) {
+                    return *ptr == p;
+                });
+                if (l.found != nullptr) {
+                    if (log) {
+                        Logeb();
+                        printf("REMOVE: found tracked pointer %p with wanted pointer %p\n", *l.found->node, p);
+                        Logr();
+                    }
+                    remove_node(l);
+                    return true;
+                }
+                warn_ptr("REMOVE", p);
+                return false;
+            }
+            
+            ~PTR_LL() {
+                auto s = 0;
+                if (s != 0) {
+                    if (s != 1) {
+                        Logeb();
+                        printf("~PTR_LL(), FREEING %zu TrackedMallocator/OwnerReference POINTERS\n", s);
+                        Logr();
+                    }
+                    remove_all();
+                    if (s != 1) {
+                        Logeb();
+                        printf("~PTR_LL(), ALL TrackedMallocator/OwnerReference POINTERS HAVE BEEN FREED\n");
+                        Logr();
+                    }
+                }
             }
         };
 
-        LLP pointers;
+        // these are used by TrackedMallocator and by the TrackedAllocator for storing PointerInfo owner references
+        PTR_LL pointers;
 
         struct PointerInfo {
+            SA____STACK_ALLOCATOR__REF_ONLY(PointerInfo, PointerInfo);
             void * pointer = nullptr;
             bool adopted = false;
             std::size_t count = 0;
             std::function<void(void*)> t_destructor;
             std::function<void(PointerInfo&)> destructor;
-            LLP refs;
-            SA____STACK_ALLOCATOR__REF_ONLY(PointerInfo, PointerInfo);
-            ~PointerInfo() {
+            PTR_LL refs;
+
+            void release() {
+                pointer = nullptr;
+                adopted = false;
+                count = 0;
+            }
+
+            virtual ~PointerInfo() {
                 if (log) {
                     Logeb();
                     printf("~PointerInfo()\n");
                     Logr();
                 }
+                destructor(*this);
             }
         };
 
-        struct LLPI {
-            SA____STACK_ALLOCATOR__REF_ONLY(LLPI, LLPI);
-            PointerInfo * value = nullptr;
-            LLPI* next = nullptr;
-            size_t size = 0;
-            
-            PointerInfo & ref(void * ptr, void * owner) {
-                LLPI * t = this;
-                LOOP:
-                if (t->value == nullptr) {
-                    t->value = static_cast<PointerInfo*>(calloc(sizeof(PointerInfo), 1));
-                    new(t->value) PointerInfo();
-                    t->value->pointer = ptr;
-                    t->value->refs.add_pointer(owner);
-                    size++;
-                    return *t->value;
-                } else if (t->value->pointer == ptr) {
-                    t->value->refs.add_pointer(owner);
-                    return *t->value;
-                } else {
-                    if (t->next == nullptr) {
-                        t->next = static_cast<LLPI*>(calloc(sizeof(LLPI), 1));
-                        new(t->next) LLPI();
-                    }
-                    t = t->next;
-                    goto LOOP;
-                }
-            }
+        struct PTRINFO_LL : private SA__LinkedList<PointerInfo> {
+            using SA__LinkedList<PointerInfo>::size;
+            SA____STACK_ALLOCATOR__REF_ONLY(PTRINFO_LL, PTRINFO_LL);
 
-            bool release(void * ptr) {
-                LLPI * t = this;
-                LOOP:
-                if (t->value != nullptr && t->value->pointer == ptr) {
-                    t->value->~PointerInfo();
-                    free(t->value);
-                    t->value = nullptr;
-                    if (t->next != nullptr) {
-                        LLPI * current = t;
-                        LLPI * next = t->next;
-                        if (current != this) {
-                            current->~LLPI();
-                            free(current);
-                            t = next;
-                        } else {
-                            t->value = next->value;
-                            t->next = next->next;
-                            next->value = nullptr;
-                            next->next = nullptr;
-                            next->~LLPI();
-                            free(next);
-                        }
+            PointerInfo & ref(void * ptr, void * owner) {
+                bool f = false;
+                PointerInfo * p = find_or_add([&](PointerInfo*p) {
+                    if (p->pointer == ptr) {
+                        f = true;
                     }
-                    size--;
-                    return true;
+                    return f;
+                });
+                if (f) {
+                    if (log) {
+                        Logeb();
+                        printf("REF: found tracked pointer %p with wanted pointer %p\n", p->pointer, ptr);
+                        Logr();
+                    }
                 } else {
-                    if (t->next == nullptr) {
-                        return false;
+                    p->pointer = ptr;
+                    if (log) {
+                        Logeb();
+                        printf("REF: added tracked pointer %p with wanted pointer %p\n", p->pointer, ptr);
+                        Logr();
                     }
-                    t = t->next;
-                    goto LOOP;
                 }
+                bool pf = false;
+                void ** o = p->refs.find_or_add_pointer([&](void**p) {
+                    if (*p == owner) {
+                        pf = true;
+                    }
+                    return pf;
+                });
+                if (pf) {
+                    if (log) {
+                        Logeb();
+                        printf("REF: found tracked owner pointer %p with wanted pointer %p\n", *o, owner);
+                        Logr();
+                    }
+                } else {
+                    *o = owner;
+                    if (log) {
+                        Logeb();
+                        printf("REF: added tracked owner pointer %p with wanted pointer %p\n", *o, owner);
+                        Logr();
+                    }
+                }
+                return *p;
+            }
+            
+            bool release(void * ptr) {
+                if (size == 0) {
+                    warn_ptr("RELEASE", ptr);
+                    return false;
+                }
+                auto l = find_node([&](PointerInfo*p) {
+                    return p->pointer == ptr;
+                });
+                if (l.found != nullptr) {
+                    if (log) {
+                        Logeb();
+                        printf("RELEASE: found tracked pointer %p with wanted pointer %p\n", l.found->node->pointer, ptr);
+                        Logr();
+                    }
+                    // dont release if owned by global
+                    auto global = GET_GLOBAL();
+                    if (l.found->node->refs.find_pointer(global, false) != nullptr) {
+                        if (l.found->node->refs.size != 1) {
+                            l.found->node->refs.remove_all_pointers_except(global);
+                            return true;
+                        }
+                        return false;
+                    } else {
+                        // we are not owned by global, it is safe to release
+                        l.found->node->release();
+                        remove_node(l);
+                        return true;
+                    }
+                }
+                warn_ptr("RELEASE", ptr);
+                return false;
             }
 
             void unref(void * ptr, void * owner, std::function<bool(void*,void*)> pred) {
-                LLPI * t = this;
-                LOOP:
-                if (t->value != nullptr && pred(t->value->pointer, ptr)) {
-                    if (t->value->refs.find_pointer(owner) != nullptr) {
-                        if (t->value->refs.size == 1) {
-                            t->value->destructor(*t->value);
-                            t->value->refs.remove_pointer(owner);
-                            t->value->~PointerInfo();
-                            free(t->value);
-                            t->value = nullptr;
-                            if (t->next != nullptr) {
-                                LLPI * current = t;
-                                LLPI * next = t->next;
-                                if (current != this) {
-                                    current->~LLPI();
-                                    free(current);
-                                    t = next;
-                                } else {
-                                    t->value = next->value;
-                                    t->next = next->next;
-                                    next->value = nullptr;
-                                    next->next = nullptr;
-                                    next->~LLPI();
-                                    free(next);
-                                }
-                            }
-                            size--;
+                if (size == 0) {
+                    warn_ptr("UNREF", ptr);
+                    return;
+                }
+                auto l = find_node([&](PointerInfo*p) {
+                    return pred(p->pointer, ptr);
+                });
+                if (l.found != nullptr) {
+                    if (log) {
+                        Logeb();
+                        printf("UNREF: found tracked pointer %p with wanted pointer %p\n", l.found->node->pointer, ptr);
+                        Logr();
+                    }
+                    if (l.found->node->refs.find_pointer(owner, false) != nullptr) {
+                        if (l.found->node->refs.size == 1) {
+                            remove_node(l);
                         } else {
-                            t->value->refs.remove_pointer(owner);
+                            l.found->node->refs.remove_pointer(owner);
                         }
                     }
-                } else if (t->next != nullptr) {
-                    t = t->next;
-                    goto LOOP;
+                } else {
+                    warn_ptr("UNREF", ptr);
                 }
             }
 
-            ~LLPI() {
-                if (log) {
-                    Logeb();
-                    printf("~LLPI()\n");
-                    Logr();
-                }
-                LLPI * t = this;
-                LOOP:
-                if (t->value != nullptr) {
-                    t->value->destructor(*t->value);
-                    t->value->~PointerInfo();
-                    free(t->value);
-                    t->value = nullptr;
-                }
-                if (t->next != nullptr) {
-                    LLPI * current = t;
-                    LLPI * next = t->next;
-                    if (current != this) {
-                        current->~LLPI();
-                        free(current);
-                        t = next;
-                    } else {
-                        t->value = next->value;
-                        t->next = next->next;
-                        next->value = nullptr;
-                        next->next = nullptr;
-                        next->~LLPI();
-                        free(next);
+            ~PTRINFO_LL() {
+                auto s = 0;
+                if (s != 0) {
+                    if (s != 1) {
+                        Logeb();
+                        printf("~PTRINFO_LL(), FREEING %zu TrackedAllocator POINTERS\n", s);
+                        Logr();
                     }
-                    goto LOOP;
+                    remove_all();
+                    if (s != 1) {
+                        Logeb();
+                        printf("~PTRINFO_LL(), ALL TrackedAllocator POINTERS HAVE BEEN FREED\n");
+                        Logr();
+                    }
                 }
-                size = 0;
             }
         };
 
-        LLPI tracked_pointers;
+        // these are used by the TrackedAllocator
+        PTRINFO_LL tracked_pointers;
 
-        SA____STACK_ALLOCATOR__REF_ONLY_NO_DEFAULT_CONSTRUCTOR(SINGLETONS, SINGLETONS);
+        SA____STACK_ALLOCATOR__REF_ONLY(SINGLETONS, SINGLETONS);
 
-        SINGLETONS() {
-            if (log) {
-                Logeb();
-                printf("SINGLETONS()\n");
-                Logr();
-            }
-        }
         ~SINGLETONS() {
             if (log) {
                 Logeb();
@@ -452,7 +715,7 @@ namespace SA {
                 Logr();
             }
         }
-    } singletons;
+    };
 
     class save_cout {
         std::ostream & s;
@@ -498,12 +761,13 @@ namespace SA {
         {
             if (n > std::numeric_limits<std::size_t>::max() / sizeof(T))
                 throw std::bad_array_new_length();
-            
-            singletons.mutex.lock();
+
+            auto & singleton = GET_SINGLETONS();
+            singleton.mutex.lock();
             void * ptr;
             while (true) {
                 // calloc initializes memory and stops valgrind complaining about uninitialized memory use
-                ptr = std::calloc(n, sizeof(T));
+                ptr = SINGLETONS::inspect_calloc(n, sizeof(T));
                 if (ptr == nullptr) {
                     auto handler = std::get_new_handler();
                     if (handler == nullptr) {
@@ -516,18 +780,15 @@ namespace SA {
                     break;
                 }
             }
-            singletons.memory_usage += sizeof(T)*n;
-            singletons.per_type<T>().memory_usage += sizeof(T)*n;
+            singleton.memory_usage += sizeof(T)*n;
+            singleton.per_type<T>().memory_usage += sizeof(T)*n;
             if (log) {
                 Logib();
-                printf("calloc returned %p\n", ptr);
-                Logr();
-                Logib();
-                printf("allocated %zu bytes of memory, total memory usage for '%s': %zu bytes. total memory usage: %zu bytes\n", sizeof(T)*n, singletons.per_type<T>().demangled, singletons.per_type<T>().memory_usage, singletons.memory_usage);
+                printf("allocated %zu bytes of memory, total memory usage for '%s': %zu bytes. total memory usage: %zu bytes\n", sizeof(T)*n, singleton.per_type<T>().demangled, singleton.per_type<T>().memory_usage, singleton.memory_usage);
                 Logr();
             }
             onAlloc(static_cast<T*>(ptr), sizeof(T)*n);
-            singletons.mutex.unlock();
+            singleton.mutex.unlock();
             return static_cast<T*>(ptr);
         }
     
@@ -537,9 +798,10 @@ namespace SA {
             volatile uint8_t* s = reinterpret_cast<uint8_t*>(p);
             volatile uint8_t* e = s + (sizeof(T)*n);
             std::fill(s, e, 0);
-            std::free(p);
-            singletons.memory_usage -= sizeof(T)*n;
-            singletons.per_type<T>().memory_usage -= sizeof(T)*n;
+            SINGLETONS::inspect_free(p);
+            auto & singleton = GET_SINGLETONS();
+            singleton.memory_usage -= sizeof(T)*n;
+            singleton.per_type<T>().memory_usage -= sizeof(T)*n;
         }
 
         void deallocate(T* p, std::size_t n) noexcept
@@ -552,11 +814,12 @@ namespace SA {
             if (p == nullptr) {
                 return;
             }
-            singletons.mutex.lock();
+            auto & singleton = GET_SINGLETONS();
+            singleton.mutex.lock();
             if (onDealloc(p, sizeof(T)*n)) {
                 if (log) {
                     Logib();
-                    printf("deallocating %zu bytes of memory, total memory usage for '%s': %zu bytes. total memory usage: %zu bytes\n", sizeof(T)*n, singletons.per_type<T>().demangled, singletons.per_type<T>().memory_usage, singletons.memory_usage);
+                    printf("deallocating %zu bytes of memory, total memory usage for '%s': %zu bytes. total memory usage: %zu bytes\n", sizeof(T)*n, singleton.per_type<T>().demangled, singleton.per_type<T>().memory_usage, singleton.memory_usage);
                     Logr();
                     Logib();
                     printf("logging contents\n");
@@ -569,29 +832,7 @@ namespace SA {
                 printf("error: pointer %p could not be found in the list of allocated pointers, ignoring\n", p);
                 Logr();
             }
-            singletons.mutex.unlock();
-        }
-    };
-
-    struct PTR {
-        std::vector<void*, Mallocator<void*>> pointers;
-        static std::vector<void*, Mallocator<void*>> & instance()
-        {
-            static PTR ptr;
-            Logeb();
-            printf("PTR obtaining tracked pointers\n");
-            Logr();
-            return ptr.pointers;
-        }
-        PTR() {
-            Logeb();
-            printf("PTR() init tracked pointers\n");
-            Logr();
-        }
-        ~PTR() {
-            Logeb();
-            printf("~PTR, removing %zu tracked pointers\n", pointers.size());
-            Logr();
+            singleton.mutex.unlock();
         }
     };
 
@@ -601,19 +842,21 @@ namespace SA {
         using Mallocator<T>::Mallocator;
 
         void onAlloc(T * p, std::size_t n) override {
-            singletons.pointers.add_pointer(p);
+            GET_SINGLETONS().pointers.add_pointer(p);
         }
     
         bool onDealloc(T * p, std::size_t n) override {
-            return singletons.pointers.remove_pointer(p);
+            return GET_SINGLETONS().pointers.remove_pointer(p);
         }
     };
 
-    struct AllocatorBase {};
+    template <typename T>
+    static TrackedMallocator<T> & GET_TRACKED_MALLOCATOR() {
+        static TrackedMallocator<T> m;
+        return m;
+    }
 
-    class TrackedAllocator : AllocatorBase {
-
-        public:
+    struct TrackedAllocator : AllocatorBase {
 
         TrackedAllocator() {}
 
@@ -625,8 +868,9 @@ namespace SA {
         
         template <typename T>
         void adopt(T * ptr, std::function<void(void*)> destructor = [](void*p){ delete static_cast<T*>(p); }) {
-            singletons.mutex.lock();
-            auto & p = singletons.tracked_pointers.ref(ptr, this);
+            auto & singleton = GET_SINGLETONS();
+            singleton.mutex.lock();
+            auto & p = singleton.tracked_pointers.ref(ptr, this);
             if (p.refs.size == 1) {
                 p.count = 1;
                 p.adopted = true;
@@ -640,13 +884,14 @@ namespace SA {
                     }
                 };
             }
-            singletons.mutex.unlock();
+            singleton.mutex.unlock();
         }
 
         static void release(void * ptr) {
-            singletons.mutex.lock();
-            singletons.tracked_pointers.release(ptr);
-            singletons.mutex.unlock();
+            auto & singleton = GET_SINGLETONS();
+            singleton.mutex.lock();
+            singleton.tracked_pointers.release(ptr);
+            singleton.mutex.unlock();
         }
 
         template <typename T, typename ... Args>
@@ -691,9 +936,10 @@ namespace SA {
 
         template <typename T>
         [[nodiscard]] T * alloc_internal(std::size_t count, std::function<void(void*)> destructor) {
-            T * ptr = TrackedMallocator<T>().allocate(count);
-            singletons.mutex.lock();
-            auto & p = singletons.tracked_pointers.ref(ptr, this);
+            T * ptr = GET_TRACKED_MALLOCATOR<T>().allocate(count);
+            auto & singleton = GET_SINGLETONS();
+            singleton.mutex.lock();
+            auto & p = singleton.tracked_pointers.ref(ptr, this);
             if (p.refs.size == 1) {
                 onAlloc(p.pointer, sizeof(T)*p.count);
                 p.count = 1;
@@ -703,51 +949,38 @@ namespace SA {
                     if (p.pointer != nullptr) {
                         //onDealloc(p.pointer, sizeof(T)*p.count);
                         p.t_destructor(p.pointer);
-                        TrackedMallocator<T>().deallocate(static_cast<T*>(p.pointer), p.count);
+                        GET_TRACKED_MALLOCATOR<T>().deallocate(static_cast<T*>(p.pointer), p.count);
                         p.pointer = nullptr;
                         p.adopted = false;
                         p.count = 0;
                     }
                 };
             }
-            singletons.mutex.unlock();
+            singleton.mutex.unlock();
             return ptr;
         }
 
         void internal_dealloc(void * ptr, std::function<bool(void*,void*)> pred) {
-            singletons.mutex.lock();
-            singletons.tracked_pointers.unref(ptr, this, [&](void* a, void* b) { return pred(a, b); });
-            singletons.mutex.unlock();
+            auto & singleton = GET_SINGLETONS();
+            singleton.mutex.lock();
+            singleton.tracked_pointers.unref(ptr, this, [&](void* a, void* b) { return pred(a, b); });
+            singleton.mutex.unlock();
         }
-    };
-
-    class TrackedMutex {
-        TrackedAllocator mutex_allocator;
-
-        public:
-
-        std::mutex* mutex = nullptr;
-
-        TrackedMutex() {
-            mutex = mutex_allocator.alloc<std::mutex>();
-        }
-
-        TrackedMutex(const TrackedMutex & other) = delete;
-        TrackedMutex & operator=(const TrackedMutex & other) = delete;
-
-        TrackedMutex(TrackedMutex && other) = default;
-        TrackedMutex & operator=(TrackedMutex && other) = default;
-
-        virtual ~TrackedMutex() = default;
     };
 
     class TrackedAllocatorWithMemUsage : public TrackedAllocator {
         size_t memory_usage = 0;
-        TrackedMutex mutex;
+
+        Mallocator<std::mutex> mutex_allocator;
+        std::mutex * mutex = nullptr;
 
         public:
 
         using TrackedAllocator::TrackedAllocator;
+
+        TrackedAllocatorWithMemUsage() {
+            mutex = mutex_allocator.allocate(1);
+        }
 
         TrackedAllocatorWithMemUsage(const TrackedAllocatorWithMemUsage & other) = delete;
         TrackedAllocatorWithMemUsage & operator=(const TrackedAllocatorWithMemUsage & other) = delete;
@@ -766,20 +999,23 @@ namespace SA {
             Logib();
             printf("deallocated %zu bytes of memory\n", n);
             Logr();
+
+            mutex_allocator.deallocate(mutex, sizeof(std::mutex));
+            mutex = nullptr;
         }
 
         protected:
 
         void onAlloc(void * p, std::size_t n) override {
-            mutex.mutex->lock();
+            mutex->lock();
             memory_usage += n;
-            mutex.mutex->unlock();
+            mutex->unlock();
         }
 
         void onDealloc(void * p, std::size_t n) override {
-            mutex.mutex->lock();
+            mutex->lock();
             memory_usage -= n;
-            mutex.mutex->unlock();
+            mutex->unlock();
         }
     };
 
@@ -798,91 +1034,166 @@ namespace SA {
 
 #include <new>
 
-void *operator new(size_t size);
-void *operator new[](size_t size);
-void operator delete(void *ptr) noexcept;
-void operator delete[](void *ptr) noexcept;
-void operator delete(void *ptr, std::size_t sz) noexcept;
-void operator delete[](void *ptr, std::size_t sz) noexcept;
-
-#ifdef __cpp_aligned_new
-extern void *operator new(size_t size, std::align_val_t al);
-extern void *operator new[](std::size_t size, std::align_val_t al);
-extern void operator delete(void *ptr, std::align_val_t al) noexcept;
-extern void operator delete[](void *ptr, std::align_val_t al) noexcept;
-extern void operator delete(void *ptr, std::size_t sz, std::align_val_t al) noexcept;
-extern void operator delete[](void *ptr, std::size_t sz, std::align_val_t al) noexcept;
-#endif
-
 #include <memory>
 #include <mutex>
 #include <stdlib.h>
 #include <limits>
 #include <string.h>
 
-struct {
-    static SA::Allocator & instance()
-    {
-        static SA::Allocator SA_STACK_ALLOCATOR_ALLOCATOR;
-        return SA_STACK_ALLOCATOR_ALLOCATOR;
-    }
-
-    static void* alloc(size_t size) {
-        return instance().alloc(size);
-    }
-
-    static void dealloc(void* ptr) {
-        instance().dealloc(ptr);
-    }
-} SA_STACK_ALLOCATOR_ALLOCATOR_WRAPPER;
-
 void *operator new(size_t size) {
-    return SA_STACK_ALLOCATOR_ALLOCATOR_WRAPPER.alloc(size);
+    auto & singleton = SA::GET_SINGLETONS();
+
+    auto s = singleton.mutex.scoped();
+
+    if (singleton.mutex.lock_count() != 1) {
+        return singleton.mallocator.alloc(size);
+    }
+
+    if (SA::log) {
+        SA::Logib();
+        printf("new(%zu)\n", size);
+        SA::Logr();
+    }
+    return SA::GET_GLOBAL()->alloc(size);
 }
 
 void *operator new[](size_t size) {
-    return SA_STACK_ALLOCATOR_ALLOCATOR_WRAPPER.alloc(size);
+    auto & singleton = SA::GET_SINGLETONS();
+
+    auto s = singleton.mutex.scoped();
+
+    if (singleton.mutex.lock_count() != 1) {
+        return singleton.mallocator.alloc(size);
+    }
+    if (SA::log) {
+        SA::Logib();
+        printf("new[](%zu)\n", size);
+        SA::Logr();
+    }
+    return SA::GET_GLOBAL()->alloc(size);
 }
 
 void operator delete(void *ptr) noexcept {
-    return SA_STACK_ALLOCATOR_ALLOCATOR_WRAPPER.dealloc(ptr);
+    auto & singleton = SA::GET_SINGLETONS();
+    singleton.mutex.lock();
+    if (SA::log) {
+        SA::Logib();
+        printf("delete(%p)\n", ptr);
+        SA::Logr();
+    }
+    SA::GET_GLOBAL()->dealloc(ptr);
+    singleton.mutex.unlock();
 }
 
 void operator delete[](void *ptr) noexcept {
-    return SA_STACK_ALLOCATOR_ALLOCATOR_WRAPPER.dealloc(ptr);
+    auto & singleton = SA::GET_SINGLETONS();
+    singleton.mutex.lock();
+    if (SA::log) {
+        SA::Logib();
+        printf("delete[](%p)\n", ptr);
+        SA::Logr();
+    }
+    SA::GET_GLOBAL()->dealloc(ptr);
+    singleton.mutex.unlock();
 }
 
 void operator delete(void *ptr, std::size_t sz) noexcept {
-    return SA_STACK_ALLOCATOR_ALLOCATOR_WRAPPER.dealloc(ptr);
+    auto & singleton = SA::GET_SINGLETONS();
+    singleton.mutex.lock();
+    if (SA::log) {
+        SA::Logib();
+        printf("delete(%p, %zu)\n", ptr, sz);
+        SA::Logr();
+    }
+    SA::GET_GLOBAL()->dealloc(ptr);
+    singleton.mutex.unlock();
 }
 
 void operator delete[](void *ptr, std::size_t sz) noexcept {
-    return SA_STACK_ALLOCATOR_ALLOCATOR_WRAPPER.dealloc(ptr);
+    auto & singleton = SA::GET_SINGLETONS();
+    singleton.mutex.lock();
+    if (SA::log) {
+        SA::Logib();
+        printf("delete[](%p, %zu)\n", ptr, sz);
+        SA::Logr();
+    }
+    SA::GET_GLOBAL()->dealloc(ptr);
+    singleton.mutex.unlock();
 }
 
 #ifdef __cpp_aligned_new
 void *operator new(size_t size, std::align_val_t al) {
-    return SA_STACK_ALLOCATOR_ALLOCATOR_WRAPPER.alloc(size);
+    auto & singleton = SA::GET_SINGLETONS();
+    singleton.mutex.lock();
+    if (SA::log) {
+        SA::Logib();
+        printf("aligned new(%zu, %zu)\n", size, al);
+        SA::Logr();
+    }
+    void * p = SA::GET_GLOBAL()->alloc(size);
+    singleton.mutex.unlock();
+    return p;
 }
 
 void *operator new[](std::size_t size, std::align_val_t al) {
-    return SA_STACK_ALLOCATOR_ALLOCATOR_WRAPPER.alloc(size);
+    auto & singleton = SA::GET_SINGLETONS();
+    singleton.mutex.lock();
+    if (SA::log) {
+        SA::Logib();
+        printf("aligned new[](%zu, %zu)\n", size, al);
+        SA::Logr();
+    }
+    void * p = SA::GET_GLOBAL()->alloc(size);
+    singleton.mutex.unlock();
+    return p;
 }
 
 void operator delete(void *ptr, std::align_val_t al) noexcept {
-    return SA_STACK_ALLOCATOR_ALLOCATOR_WRAPPER.dealloc(ptr);
+    auto & singleton = SA::GET_SINGLETONS();
+    singleton.mutex.lock();
+    if (SA::log) {
+        SA::Logib();
+        printf("aligned delete(%p, %zu)\n", ptr, al);
+        SA::Logr();
+    }
+    SA::GET_GLOBAL()->dealloc(ptr);
+    singleton.mutex.unlock();
 }
 
 void operator delete[](void *ptr, std::align_val_t al) noexcept {
-    return SA_STACK_ALLOCATOR_ALLOCATOR_WRAPPER.dealloc(ptr);
+    auto & singleton = SA::GET_SINGLETONS();
+    singleton.mutex.lock();
+    if (SA::log) {
+        SA::Logib();
+        printf("aligned delete[](%p, %zu)\n", ptr, al);
+        SA::Logr();
+    }
+    SA::GET_GLOBAL()->dealloc(ptr);
+    singleton.mutex.unlock();
 }
 
 void operator delete(void *ptr, std::size_t sz, std::align_val_t al) noexcept {
-    return SA_STACK_ALLOCATOR_ALLOCATOR_WRAPPER.dealloc(ptr);
+    auto & singleton = SA::GET_SINGLETONS();
+    singleton.mutex.lock();
+    if (SA::log) {
+        SA::Logib();
+        printf("aligned delete(%p, %zu, %zu)\n", ptr, sz, al);
+        SA::Logr();
+    }
+    SA::GET_GLOBAL()->dealloc(ptr);
+    singleton.mutex.unlock();
 }
 
 void operator delete[](void *ptr, std::size_t sz, std::align_val_t al) noexcept {
-    return SA_STACK_ALLOCATOR_ALLOCATOR_WRAPPER.dealloc(ptr);
+    auto & singleton = SA::GET_SINGLETONS();
+    singleton.mutex.lock();
+    if (SA::log) {
+        SA::Logib();
+        printf("aligned delete[](%p, %zu, %zu)\n", ptr, sz, al);
+        SA::Logr();
+    }
+    SA::GET_GLOBAL()->dealloc(ptr);
+    singleton.mutex.unlock();
 }
 #endif
 

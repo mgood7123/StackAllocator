@@ -1,0 +1,7 @@
+#ifndef ALLOC_HOOK_CPP_H
+#define ALLOC_HOOK_CPP_H
+
+#include <alloc_hook_c.h>
+
+#endif // ALLOC_HOOK_CPP_H
+

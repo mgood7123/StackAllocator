@@ -1,0 +1,6 @@
+/home/DATA/git/Gecko/HTML/qparse/StackAllocator/alloc_hook/debug_BUILD/CMakeFiles/rebuild_cache.dir
+/home/DATA/git/Gecko/HTML/qparse/StackAllocator/alloc_hook/debug_BUILD/CMakeFiles/edit_cache.dir
+/home/DATA/git/Gecko/HTML/qparse/StackAllocator/alloc_hook/debug_BUILD/CMakeFiles/AllocHook_Null_C.dir
+/home/DATA/git/Gecko/HTML/qparse/StackAllocator/alloc_hook/debug_BUILD/CMakeFiles/AllocHook_C.dir
+/home/DATA/git/Gecko/HTML/qparse/StackAllocator/alloc_hook/debug_BUILD/testBuilder/CMakeFiles/rebuild_cache.dir
+/home/DATA/git/Gecko/HTML/qparse/StackAllocator/alloc_hook/debug_BUILD/testBuilder/CMakeFiles/edit_cache.dir

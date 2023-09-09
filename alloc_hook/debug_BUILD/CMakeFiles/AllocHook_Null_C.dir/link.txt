@@ -1,0 +1,1 @@
+/usr/bin/cc  -g3 -O0 CMakeFiles/AllocHook_Null_C.dir/src/null_c.c.o -o AllocHook_Null_C  -Wl,-rpath,/home/DATA/git/Gecko/HTML/qparse/StackAllocator/alloc_hook/debug_BUILD libAllocHook_C.so -lpthread -lrt 
